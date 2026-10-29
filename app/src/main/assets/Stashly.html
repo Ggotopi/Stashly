@@ -79,8 +79,43 @@ const $=s=>document.querySelector(s);
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 let S={folders:[],items:[],cur:'all',sort:'new'};
-try{const r=localStorage.getItem('stashly-v1')||localStorage.getItem('listings-v1');if(r)S=Object.assign(S,JSON.parse(r))}catch(e){}
-const save=()=>{try{localStorage.setItem('stashly-v1',JSON.stringify(S))}catch(e){}};
+let db=null,sigs=new Map(),saving=false,again=false,mig=false;
+const FULLMSG='Couldn’t save – storage may be full. Make a backup!';
+const sig=i=>i.text+'|'+i.tags.join(',')+'|'+i.folder+'|'+i.t+'|'+(i.img||'').length+'|'+(i.img||'').slice(-40);
+const ping=()=>{try{localStorage.setItem('stashly-ping',Date.now()+'.'+Math.random())}catch(e){}};
+const req=r=>new Promise((res,rej)=>{r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)});
+function openDB(){return new Promise((res,rej)=>{try{const r=indexedDB.open('stashly',1);r.onupgradeneeded=()=>{r.result.createObjectStore('items',{keyPath:'id'});r.result.createObjectStore('meta')};r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)}catch(e){rej(e)}})}
+async function loadAll(){const tx=db.transaction(['items','meta'],'readonly');const a=req(tx.objectStore('items').getAll()),b=req(tx.objectStore('meta').get('meta'));const[items,meta]=await Promise.all([a,b]);return{items,meta}}
+function persist(){
+  if(!db){try{localStorage.setItem('stashly-v1',JSON.stringify(S))}catch(e){toast(FULLMSG)}ping();return}
+  if(saving){again=true;return}
+  saving=true;
+  try{
+    const tx=db.transaction(['items','meta'],'readwrite'),st=tx.objectStore('items'),next=new Map();
+    S.items.forEach(i=>{const g=sig(i);next.set(i.id,g);if(sigs.get(i.id)!==g)st.put(i)});
+    sigs.forEach((_,id)=>{if(!next.has(id))st.delete(id)});
+    tx.objectStore('meta').put({folders:S.folders,cur:S.cur,sort:S.sort,proxy:S.proxy},'meta');
+    tx.oncomplete=()=>{sigs=next;saving=false;if(mig){mig=false;try{localStorage.removeItem('stashly-v1');localStorage.removeItem('listings-v1')}catch(e){}}ping();if(again){again=false;persist()}};
+    tx.onabort=()=>{saving=false;again=false;toast(FULLMSG)};
+  }catch(e){saving=false;toast(FULLMSG)}
+}
+const save=()=>persist();
+async function boot(){
+  try{
+    db=await openDB();
+    const{items,meta}=await loadAll();
+    if(meta||items.length){S=Object.assign(S,meta||{},{items});sigs=new Map(items.map(i=>[i.id,sig(i)]))}
+    else{
+      try{const r=localStorage.getItem('stashly-v1')||localStorage.getItem('listings-v1');if(r){S=Object.assign(S,JSON.parse(r));mig=true}}catch(e){}
+      persist();
+    }
+  }catch(e){
+    db=null;
+    try{const r=localStorage.getItem('stashly-v1')||localStorage.getItem('listings-v1');if(r)S=Object.assign(S,JSON.parse(r))}catch(x){}
+  }
+  try{navigator.storage&&navigator.storage.persist&&navigator.storage.persist()}catch(e){}
+  render();
+}
 let vid=null,page=1;const okImg=u=>/^https?:\/\//i.test(u);let pk=null,rmImg=false;
 const isData=u=>/^data:/i.test(u||'');
 function pickImg(file,cb){const r=new FileReader();r.onload=()=>{const im=new Image();im.onload=()=>{const k=Math.min(1,360/Math.max(im.width,im.height)),c=document.createElement('canvas');c.width=Math.max(1,Math.round(im.width*k));c.height=Math.max(1,Math.round(im.height*k));const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.drawImage(im,0,0,c.width,c.height);cb(c.toDataURL('image/jpeg',.8))};im.onerror=()=>toast('Couldn’t read that image');im.src=r.result};r.readAsDataURL(file)}
@@ -179,8 +214,14 @@ function bname(){const d=new Date(),p=n=>String(n).padStart(2,'0'),cs='abcdefghi
 $('#q').addEventListener('input',()=>{page=1;render()});
 $('#sort').addEventListener('change',e=>{S.sort=e.target.value;page=1;save();render()});
 $('#rf').addEventListener('change',e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{try{const d=JSON.parse(r.result);if(!Array.isArray(d.items)||!Array.isArray(d.folders))throw 0;let n=0;d.folders.forEach(x=>{if(x&&x.id&&x.name&&!S.folders.some(y=>y.id===x.id))S.folders.push({id:String(x.id),name:String(x.name)})});d.items.forEach(x=>{if(x&&x.id&&typeof x.text==='string'&&!S.items.some(y=>y.id===x.id)){S.items.push({id:String(x.id),text:x.text,tags:Array.isArray(x.tags)?x.tags.map(String):[],img:typeof x.img==='string'?x.img:'',folder:S.folders.some(y=>y.id===x.folder)?x.folder:null,t:+x.t||Date.now()});n++}});save();render();toast('Restored '+n+' new listings')}catch(x){toast('Not a valid backup file')}};r.readAsText(f)});
-function reloadS(){try{const r=localStorage.getItem('stashly-v1');if(r){S=Object.assign({folders:[],items:[],sort:'new'},JSON.parse(r),{cur:S.cur});render()}}catch(e){}}
-addEventListener('storage',e=>{if(e.key==='stashly-v1')reloadS()});
-addEventListener('focus',reloadS);
-render();
+async function reloadS(){
+  if(saving)return;
+  try{
+    if(db){const{items,meta}=await loadAll();S=Object.assign({folders:[],items:[],sort:'new'},meta||{},{items,cur:S.cur});sigs=new Map(items.map(i=>[i.id,sig(i)]))}
+    else{const r=localStorage.getItem('stashly-v1');if(r)S=Object.assign({folders:[],items:[],sort:'new'},JSON.parse(r),{cur:S.cur})}
+    render();
+  }catch(e){}
+}
+addEventListener('storage',e=>{if(e.key==='stashly-ping'||e.key==='stashly-v1')reloadS()});
+boot();
 </script></body></html>

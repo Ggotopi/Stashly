@@ -74,6 +74,7 @@ public class OverlayService extends Service {
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
+        s.setDatabaseEnabled(true);
         s.setAllowFileAccess(true);
         web.setWebViewClient(new WebViewClient());
         web.addJavascriptInterface(new Bridge(this), "AndroidBridge");

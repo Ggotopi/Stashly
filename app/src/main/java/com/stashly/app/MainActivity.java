@@ -27,6 +27,7 @@ public class MainActivity extends Activity {
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
+        s.setDatabaseEnabled(true);
         s.setAllowFileAccess(true);
         web.setWebViewClient(new WebViewClient());
         web.setWebChromeClient(new WebChromeClient() {
